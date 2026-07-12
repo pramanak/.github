@@ -1,0 +1,51 @@
+name: Telegram Notification
+
+on:
+  workflow_call:
+    inputs:
+      message_thread_id:
+        description: 'Telegram topic/thread ID'
+        required: true
+        type: string
+    secrets:
+      TELEGRAM_TO:
+        required: true
+      TELEGRAM_TOKEN:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate message
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            COMMITS='${{ toJSON(github.event.commits) }}'
+            total=$(echo "$COMMITS" | jq 'length')
+            REPO=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+            BRANCH_URL="https://github.com/${{ github.repository }}/tree/${{ github.ref_name }}"
+            COMMIT_URL="https://github.com/${{ github.repository }}/commit/"
+            echo "Author: ${{ github.actor }}" > message.txt
+            echo "<a href=\"${BRANCH_URL}\">[${REPO}:${{ github.ref_name }}]</a> ${total} new commit(s)" >> message.txt
+            echo "" >> message.txt
+            echo "$COMMITS" | jq -r --arg url "$COMMIT_URL" '.[] | "<code><a href=\"" + $url + .id + "\">" + .id[:7] + "</a></code> " + (.message | split("\n")[0]) + " - " + (.author.name // .author.username // "unknown")' >> message.txt
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            REPO=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+            BRANCH_URL="https://github.com/${{ github.repository }}/tree/${{ github.event.pull_request.head.ref }}"
+            echo "Author: ${{ github.event.pull_request.user.login }}" > message.txt
+            echo "<a href=\"${BRANCH_URL}\">[${REPO}:${{ github.event.pull_request.head.ref }}]</a>" >> message.txt
+            echo "" >> message.txt
+            echo "${{ github.event.pull_request.title }}" >> message.txt
+          fi
+
+      - name: Send Telegram
+        run: |
+          TEXT=$(cat message.txt)
+          PAYLOAD=$(jq -n \
+            --arg chat_id "${{ secrets.TELEGRAM_TO }}" \
+            --arg text "$TEXT" \
+            --argjson thread_id "${{ inputs.message_thread_id }}" \
+            '{chat_id: $chat_id, text: $text, message_thread_id: $thread_id, parse_mode: "HTML"}')
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
